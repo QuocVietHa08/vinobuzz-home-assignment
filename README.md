@@ -84,25 +84,22 @@ It is quite hard to configure OpenClaw in the way we want, so the team needs to 
 
 ## Task 3 — AI-Assisted Engineering
 
-**Source:** [task3/](task3/)
-
 Fixing and extending a Python FastAPI wine search/recommendation endpoint.
 
-| File | Description |
-|------|-------------|
-| [task3/main.py](task3/main.py) | Fixed endpoint with comments explaining each bug and the added SKU validation feature |
-| [task3/test_wines.py](task3/test_wines.py) | pytest tests for `search_wines` covering normal queries, filters, SQL injection safety, and connection cleanup |
-| [task3/REFLECTION.md](task3/REFLECTION.md) | Reflection on how Claude Code was used and where it fell short |
+---
 
-### Bugs Fixed
-1. **SQL Injection** — `search_wines` used f-string interpolation in raw SQL; replaced with psycopg2 parameterized queries (`%s` placeholders)
-2. **Missing `conn.commit()`** — `recommend_wine` executed an INSERT but never committed it, so nothing was persisted
-3. **Connection leak** — Both endpoints opened database connections but never closed them; wrapped in `try/finally` blocks
+### Part A — Fix the bugs
 
-### Feature Added
-- `recommend_wine` now validates the wine SKU exists in the database before inserting; returns HTTP 404 if not found
+Three bugs were identified and fixed:
 
-### Code
+**Bug 1: SQL Injection** (`search_wines`)
+The original code used f-string interpolation directly in the SQL query, allowing arbitrary SQL execution. Fixed by using psycopg2 parameterized queries with `%s` placeholders.
+
+**Bug 2: Missing `conn.commit()`** (`recommend_wine`)
+The endpoint executed an INSERT but never called `conn.commit()`, so nothing was actually persisted to the database despite returning `{"status": "saved"}`.
+
+**Bug 3: Connection leak** (both endpoints)
+Both endpoints opened a database connection and never closed it, eventually exhausting the PostgreSQL connection pool. Fixed by wrapping in `try/finally` blocks.
 
 ```python
 from fastapi import APIRouter, HTTPException
@@ -192,6 +189,148 @@ def recommend_wine(user_id: int, wine_sku: str):
         conn.close()
 ```
 
+---
+
+### Part B — Add a missing feature
+
+`recommend_wine` now validates that the wine SKU exists before inserting. If the SKU is not found, it returns HTTP 404. This prevents orphaned references in the recommendations table.
+
+The key addition (already shown in the code above):
+
+```python
+cursor.execute("SELECT 1 FROM wines WHERE sku = %s", (wine_sku,))
+if cursor.fetchone() is None:
+    raise HTTPException(status_code=404, detail=f"Wine SKU '{wine_sku}' not found")
+```
+
+---
+
+### Part C — Tests
+
+Using pytest with `unittest.mock` to patch `psycopg2.connect` — no real database needed.
+
+```python
+"""
+Tests for the search_wines endpoint in main.py.
+Uses unittest.mock to patch psycopg2.connect so no real database is needed.
+"""
+
+import pytest
+from unittest.mock import patch, MagicMock
+from fastapi.testclient import TestClient
+from fastapi import FastAPI
+
+from task3.main import router
+
+app = FastAPI()
+app.include_router(router)
+client = TestClient(app)
+
+
+def make_mock_conn(rows=None):
+    """Helper: returns a mock psycopg2 connection whose cursor returns `rows`."""
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = rows or []
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    return mock_conn, mock_cursor
+
+
+class TestSearchWines:
+    def test_returns_wines_for_valid_query(self):
+        """A plain query should return whatever the database returns."""
+        fake_rows = [
+            ("CM2018", "Château Margaux 2018", 680, "Bordeaux"),
+            ("RM2019", "Romanée-Conti 2019", 4500, "Burgundy"),
+        ]
+        mock_conn, mock_cursor = make_mock_conn(fake_rows)
+
+        with patch("task3.main.psycopg2.connect", return_value=mock_conn):
+            response = client.get("/wines/search?query=château")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["wines"]) == 2
+        assert data["wines"][0][0] == "CM2018"
+
+    def test_budget_max_adds_price_filter(self):
+        """When budget_max is provided the executed SQL should include a price constraint."""
+        mock_conn, mock_cursor = make_mock_conn([])
+
+        with patch("task3.main.psycopg2.connect", return_value=mock_conn):
+            response = client.get("/wines/search?query=red&budget_max=500")
+
+        assert response.status_code == 200
+        call_args = mock_cursor.execute.call_args
+        sql, params = call_args[0]
+        assert "price" in sql.lower()
+        assert 500 in params
+
+    def test_region_filter_is_applied(self):
+        """When region is provided the SQL should include a region constraint."""
+        mock_conn, mock_cursor = make_mock_conn([])
+
+        with patch("task3.main.psycopg2.connect", return_value=mock_conn):
+            response = client.get("/wines/search?query=wine&region=Bordeaux")
+
+        assert response.status_code == 200
+        call_args = mock_cursor.execute.call_args
+        sql, params = call_args[0]
+        assert "region" in sql.lower()
+        assert "Bordeaux" in params
+
+    def test_sql_injection_in_query_is_parameterized(self):
+        """
+        A malicious query string should be passed as a parameter, not interpolated
+        into the SQL. We verify this by checking that execute() receives the raw
+        injection string as a bound parameter (not embedded in the SQL text itself).
+        """
+        injection = "'; DROP TABLE wines; --"
+        mock_conn, mock_cursor = make_mock_conn([])
+
+        with patch("task3.main.psycopg2.connect", return_value=mock_conn):
+            response = client.get(f"/wines/search?query={injection}")
+
+        assert response.status_code == 200
+        call_args = mock_cursor.execute.call_args
+        sql, params = call_args[0]
+        assert injection not in sql
+        assert any(injection in str(p) for p in params)
+
+    def test_connection_is_closed_after_request(self):
+        """The database connection should be closed even on a successful request."""
+        mock_conn, _ = make_mock_conn([])
+
+        with patch("task3.main.psycopg2.connect", return_value=mock_conn):
+            client.get("/wines/search?query=test")
+
+        mock_conn.close.assert_called_once()
+
+    def test_empty_result_returns_empty_list(self):
+        """When no wines match, the endpoint should return an empty list, not an error."""
+        mock_conn, _ = make_mock_conn([])
+
+        with patch("task3.main.psycopg2.connect", return_value=mock_conn):
+            response = client.get("/wines/search?query=nonexistent_wine_xyz")
+
+        assert response.status_code == 200
+        assert response.json() == {"wines": []}
+```
+
+---
+
+### Part D — Reflection
+
+I used **Claude Code (claude-sonnet-4-6)** as my primary AI assistant throughout this task.
+
+I presented the original endpoint code to Claude and asked it to identify bugs. Claude flagged the SQL injection vulnerability in `search_wines` — correctly explaining that f-string interpolation allowed arbitrary SQL execution and recommending parameterized queries with `%s` placeholders. It also caught the missing `conn.commit()` in `recommend_wine`, accurately noting that psycopg2 does not auto-commit INSERT statements.
+
+For the missing feature (SKU validation), Claude generated the `SELECT 1 FROM wines WHERE sku = %s` pattern and the correct `HTTPException(status_code=404)` response — both idiomatic and correct on the first attempt. For test generation, Claude scaffolded the full pytest structure with `unittest.mock.patch` to intercept `psycopg2.connect` without adjustment.
+
+I think Claude Code really good at identify the errors and suggest feature. But there are some aspect it still wrong:
+
+1. It don't understand the full context of the problem and it usually returns incorrect format if we don't actually know how to handle it. For example, if I want to have a cleaner code, I want to separate components. I need to really ask it about you should separate this service or this function into another smaller function.
+2. Sometimes, the Claude Code just doesn't understand the domain aspect. For example, if it's an e-commerce site plus AI integration, it needs to understand that. But usually, for the first prompt, it assumes it's just a generic project. 
 ---
 
 ## Stack
