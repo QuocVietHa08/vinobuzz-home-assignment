@@ -2,7 +2,7 @@
 
 This repository contains my submissions for the VinoBuzz AI Engineer take-home assignment.
 
-<video src="demo.mp4" controls width="100%"></video>
+<video src="https://github-production-user-asset-6210df.s3.amazonaws.com/56016006/573918661-5d2a33c1-9f67-486c-b21a-468b41729408.mp4?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAVCODYLSA53PQK4ZA%2F20260405%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260405T142016Z&X-Amz-Expires=300&X-Amz-Signature=63849f263e7c1abd6ee56e4b611f88cd7a71d0b6cb2c9eff4bb133d2a42d5c3f&X-Amz-SignedHeaders=host" controls width="100%"></video>
 
 ---
 
