@@ -82,6 +82,8 @@ It is quite hard to configure OpenClaw in the way we want, so the team needs to 
 
 ---
 
+# Outdated solution. Please check [`task3.md`](./task3.md).
+<del>
 ## Task 3 — AI-Assisted Engineering
 
 Fixing and extending a Python FastAPI wine search/recommendation endpoint.
@@ -338,3 +340,4 @@ I think Claude Code really good at identify the errors and suggest feature. But 
 - **AI Layer:** FastGPT / custom conversational workflow
 - **Backend (Task 3):** Python, FastAPI, psycopg2, PostgreSQL
 - **Testing:** pytest, unittest.mock
+</del>
